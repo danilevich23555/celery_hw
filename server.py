@@ -1,4 +1,5 @@
 import atexit
+import logging
 import psycopg2
 from task import match_email_app
 from celery import Celery
@@ -59,7 +60,7 @@ app.config['MAIL_USE_SSL'] = config('MAIL_USE_SSL', cast=bool)
 app.config['MAIL_USERNAME'] = config('MAIL_USERNAME')  # введите свой адрес электронной почты здесь
 app.config['MAIL_PASSWORD'] = config('MAIL_PASSWORD')  # введите пароль
 
-mail=Mail(app)
+mail=Mail(app).init_mail(app.config)
 
 
 
@@ -121,25 +122,26 @@ class ADSViews(MethodView):
 
 
 
-@celery.task()
+@celery.task(name='post_mail')
 def post_mail():
-    result = match_email_app(app, mail)
-    return result
+    try:
+        return match_email_app(app, mail)
+    except Exception as ex:
+        logging.error(ex)
 
 class MailSend(MethodView):
-
     def post(self):
-        task = post_mail().delay(15)
+        task = post_mail.apply_async()
         print(task)
         return jsonify({
             "task_id": task.id
         })
-
-
     def get(self, task_id):
         task = AsyncResult(task_id, app=celery)
         return jsonify({'status': task.status,
                         'result': task.result})
+
+
 
 
 
@@ -157,7 +159,10 @@ app.add_url_rule(
 app.add_url_rule(
     "/ads/<int:id>/", view_func=ADSViews.as_view("delete_ads"), methods=["DELETE"]
 )
-app.add_url_rule('/letter/', view_func=MailSend.as_view('Mail_send'), methods=['POST'])
+mailsend_view = MailSend.as_view('mailsend')
+app.add_url_rule('/letter/', view_func=mailsend_view, methods=['POST'])
+
+app.add_url_rule('/letter/<string:task_id>', view_func=mailsend_view, methods=['GET'])
 
 if __name__ == '__main__':
     app.run(
